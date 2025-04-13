@@ -1,8 +1,8 @@
 //
 //  PokemonApp.swift
-//  Pokemon
+//  PokemonViewer
 //
-//  Created by Mohamed Fiyaz on 13/04/25.
+//  Created by Mohamed Fiyaz on 12/04/25.
 //
 
 import SwiftUI
@@ -11,7 +11,7 @@ import SwiftUI
 struct PokemonApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            PokemonListView()
         }
     }
 }
