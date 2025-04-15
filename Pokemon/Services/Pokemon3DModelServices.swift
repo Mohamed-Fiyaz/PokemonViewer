@@ -23,11 +23,16 @@ class Pokemon3DModelService {
         }
     }
     
-    // Cache for already checked model availability
+    // Cache for already checked model availability and downloaded models
     private var modelAvailabilityCache: [Int: Bool] = [:]
+    private var modelCache: [Int: ModelEntity] = [:]
     
     // The base URL for the API
     private let apiEndpoint = "https://pokemon-3d-api.onrender.com/v1/pokemon"
+    
+    // Fallback model URLs
+    private let fallbackModelBaseURL = "https://raw.githubusercontent.com/Sudhanshu-Ambastha/Pokemon-3D/main/models/glb/regular"
+    private let alternateModelBaseURL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Box/glTF-Binary/Box.glb"
     
     // Function to check if a model is available for a specific pokemon
     func checkModelAvailability(pokemonId: Int) -> AnyPublisher<Bool, Never> {
@@ -36,54 +41,35 @@ class Pokemon3DModelService {
             return Just(isAvailable).eraseToAnyPublisher()
         }
         
-        // Create a subject to publish the result
+        // Always return true to avoid API calls that might fail
+        // Instead, we'll handle any actual availability issues during download
         let subject = PassthroughSubject<Bool, Never>()
+        subject.send(true)
+        subject.send(completion: .finished)
         
-        // Fetch the data from the API
-        fetchPokemon3DData { [weak self] result in
-            switch result {
-            case .success(let pokemonData):
-                // Look for a matching Pokémon ID
-                let isAvailable = pokemonData.contains { pokemon in
-                    pokemon.id == pokemonId
-                }
-                
-                // Cache the result
-                self?.modelAvailabilityCache[pokemonId] = isAvailable
-                subject.send(isAvailable)
-                subject.send(completion: .finished)
-                
-            case .failure(_):
-                // On failure, assume the model is not available
-                subject.send(false)
-                subject.send(completion: .finished)
-            }
-        }
+        // Cache the result
+        modelAvailabilityCache[pokemonId] = true
         
         return subject.eraseToAnyPublisher()
     }
     
-    // Overload for checking by name (which actually just converts to ID)
+    // Simplified version that always returns true to avoid crashes
     func checkModelAvailability(pokemonName: String) -> AnyPublisher<Bool, Never> {
-        // For this implementation, we'll assume pokemonName is not numeric
-        // and we won't handle the case where it is a valid Pokemon ID
-        // This is just a fallback to maintain compatibility with existing code
-        
-        // Create a subject to publish the result
         let subject = PassthroughSubject<Bool, Never>()
-        
-        // Without a proper ID, we can't reliably check, so we'll just assume false
-        // In a real implementation, you would want to map the name to an ID
-        subject.send(false)
+        subject.send(true)
         subject.send(completion: .finished)
-        
         return subject.eraseToAnyPublisher()
     }
     
     // Function to get the model URL for a given Pokémon ID
     func getModelURL(pokemonId: Int) -> URL? {
-        // Format using the documented structure with ID numbers
-        return URL(string: "https://raw.githubusercontent.com/Sudhanshu-Ambastha/Pokemon-3D/main/models/glb/regular/\(pokemonId).glb")
+        // First try the primary URL format
+        if let primaryURL = URL(string: "\(fallbackModelBaseURL)/\(pokemonId).glb") {
+            return primaryURL
+        }
+        
+        // Fallback to a generic box model that's guaranteed to work
+        return URL(string: alternateModelBaseURL)
     }
     
     // Overload to maintain compatibility with existing code
@@ -92,68 +78,129 @@ class Pokemon3DModelService {
             return getModelURL(pokemonId: id)
         }
         
-        // Without an ID, we can't generate a URL
-        return nil
+        // Fallback to a generic box model
+        return URL(string: alternateModelBaseURL)
     }
     
-    // Fetches all 3D Pokémon data
-    private func fetchPokemon3DData(completion: @escaping (Result<[Pokemon3DResponse], Error>) -> Void) {
-        guard let url = URL(string: apiEndpoint) else {
-            completion(.failure(NSError(domain: "Invalid URL", code: 0, userInfo: nil)))
+    // Function to load a GLB model from a URL with better error handling
+    func loadGLBModel(from url: URL, completion: @escaping (Result<ModelEntity, Error>) -> Void) {
+        // Check if we have the model in cache
+        if let id = extractPokemonId(from: url), let cachedModel = modelCache[id] {
+            completion(.success(cachedModel.clone(recursive: true)))
             return
         }
         
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        print("Attempting to download model from: \(url.absoluteString)")
+        
+        // Create a download task with a timeout
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 15 // 15 seconds timeout
+        let session = URLSession(configuration: config)
+        
+        let task = session.downloadTask(with: url) { [weak self] localURL, response, error in
+            guard let self = self else { return }
+            
+            // Check for network errors
             if let error = error {
-                completion(.failure(error))
+                print("Download error: \(error.localizedDescription)")
+                self.handleModelLoadingError(completion: completion)
                 return
             }
             
-            guard let data = data else {
-                completion(.failure(NSError(domain: "No data", code: 0, userInfo: nil)))
+            guard let localURL = localURL,
+                  let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                print("Invalid response or missing file")
+                self.handleModelLoadingError(completion: completion)
                 return
             }
             
+            // Check file size to ensure it's a valid model
             do {
-                let pokemonData = try JSONDecoder().decode([Pokemon3DResponse].self, from: data)
-                completion(.success(pokemonData))
-            } catch {
-                print("JSON decoding error: \(error)")
-                completion(.failure(error))
-            }
-        }.resume()
-    }
-    
-    // Function to load a GLB model from a URL
-    func loadGLBModel(from url: URL, completion: @escaping (Result<ModelEntity, Error>) -> Void) {
-        // Create a download task
-        let task = URLSession.shared.downloadTask(with: url) { localURL, response, error in
-            // Check for errors
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
-            
-            guard let localURL = localURL else {
-                completion(.failure(NSError(domain: "No local URL", code: 0, userInfo: nil)))
-                return
-            }
-            
-            // Load the model entity from the downloaded file
-            do {
-                let modelEntity = try ModelEntity.loadModel(contentsOf: localURL)
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: localURL.path)
+                let fileSize = fileAttributes[.size] as? NSNumber ?? 0
                 
-                // Scale the model appropriately for AR
-                modelEntity.scale = SIMD3<Float>(0.1, 0.1, 0.1)
+                // If file is too small (less than 1KB), it's probably not a valid model
+                if fileSize.intValue < 1024 {
+                    print("File too small, likely not a valid model: \(fileSize) bytes")
+                    self.handleModelLoadingError(completion: completion)
+                    return
+                }
                 
-                // Complete with success
-                completion(.success(modelEntity))
+                // Try to load the model
+                self.loadModel(from: localURL, sourceURL: url, completion: completion)
             } catch {
-                completion(.failure(error))
+                print("File attribute error: \(error.localizedDescription)")
+                self.handleModelLoadingError(completion: completion)
             }
         }
         
         // Start the download
         task.resume()
+    }
+    
+    // Helper to actually load the model with error handling
+    private func loadModel(from localURL: URL, sourceURL: URL, completion: @escaping (Result<ModelEntity, Error>) -> Void) {
+        do {
+            // Try to load the model entity from the downloaded file
+            let modelEntity = try ModelEntity.loadModel(contentsOf: localURL)
+            
+            // Scale the model appropriately for AR
+            modelEntity.scale = SIMD3<Float>(0.1, 0.1, 0.1)
+            
+            // Cache the model if possible
+            if let id = extractPokemonId(from: sourceURL) {
+                modelCache[id] = modelEntity.clone(recursive: true)
+            }
+            
+            // Complete with success
+            DispatchQueue.main.async {
+                completion(.success(modelEntity))
+            }
+        } catch {
+            print("Model loading error: \(error.localizedDescription)")
+            handleModelLoadingError(completion: completion)
+        }
+    }
+    
+    // Helper to extract Pokemon ID from URL
+    private func extractPokemonId(from url: URL) -> Int? {
+        // Try to extract ID from the URL path
+        let filename = url.lastPathComponent
+        let idString = filename.components(separatedBy: ".").first ?? ""
+        return Int(idString)
+    }
+    
+    // Fallback handler for when model loading fails
+    private func handleModelLoadingError(completion: @escaping (Result<ModelEntity, Error>) -> Void) {
+        // Create a simple fallback model (a colored box)
+        DispatchQueue.main.async {
+            let boxSize: Float = 0.1
+            let box = ModelEntity(mesh: .generateBox(size: boxSize))
+            
+            // Add some color to make it obvious it's a fallback
+            var material = SimpleMaterial()
+            material.baseColor = .color(.init(red: 1.0, green: 0.0, blue: 0.0, alpha: 0.8))
+            box.model?.materials = [material]
+            
+            // Add a text label to indicate it's a fallback
+            let textMesh = MeshResource.generateText("Model\nUnavailable",
+                                                    extrusionDepth: 0.01,
+                                                    font: .systemFont(ofSize: 0.05),
+                                                    containerFrame: .zero,
+                                                    alignment: .center)
+            
+            let textEntity = ModelEntity(mesh: textMesh)
+            textEntity.scale = SIMD3<Float>(0.5, 0.5, 0.5)
+            textEntity.position = SIMD3<Float>(0, boxSize/2 + 0.05, 0)
+            
+            var textMaterial = SimpleMaterial()
+            textMaterial.baseColor = .color(.white)
+            textEntity.model?.materials = [textMaterial]
+            
+            box.addChild(textEntity)
+            
+            completion(.success(box))
+        }
     }
 }

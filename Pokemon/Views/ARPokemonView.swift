@@ -14,10 +14,14 @@ struct ARPokemonView: View {
     @StateObject private var viewModel = ARViewModel()
     @State private var placementMode = true
     @State private var showDebugInfo = false
+    @Environment(\.presentationMode) var presentationMode
     
     var body: some View {
         ZStack(alignment: .bottom) {
-            ARViewContainer(pokemon: pokemon, modelEntity: viewModel.modelEntity, placementMode: $placementMode)
+            ARViewContainer(pokemon: pokemon,
+                           modelEntity: viewModel.modelEntity,
+                           placementMode: $placementMode,
+                           isPlacementReady: viewModel.isPlacementReady)
                 .edgesIgnoringSafeArea(.all)
             
             // Debug overlay for development
@@ -25,12 +29,20 @@ struct ARPokemonView: View {
                 VStack {
                     Text("Debug Info")
                         .font(.headline)
-                    Text("Pokemon: \(pokemon.name)")
+                    Text("Pokemon: \(pokemon.name) (ID: \(pokemon.id))")
                     if let url = pokemon.modelUrl {
                         Text("Model URL: \(url.absoluteString)")
                             .font(.caption)
                             .lineLimit(2)
                     }
+                    
+                    if let error = viewModel.error {
+                        Text("Error: \(error)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .lineLimit(3)
+                    }
+                    
                     Button("Hide Debug") {
                         showDebugInfo = false
                     }
@@ -53,18 +65,41 @@ struct ARPokemonView: View {
                 ErrorOverlay(message: error) {
                     viewModel.loadModel(for: pokemon)
                 }
-            } else if placementMode {
+            } else if placementMode && viewModel.isPlacementReady {
                 PlacementButton {
                     placementMode = false
                 }
-            } else {
+            } else if !placementMode {
                 ARControlsView(placementMode: $placementMode, showDebug: $showDebugInfo)
             }
         }
         .navigationTitle("\(pokemon.name) in AR")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarItems(trailing:
+            Button(action: {
+                showDebugInfo.toggle()
+            }) {
+                Image(systemName: "ladybug")
+                    .foregroundColor(.blue)
+            }
+        )
         .onAppear {
-            viewModel.loadModel(for: pokemon)
+            // Small delay to ensure the AR session has time to initialize
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                viewModel.loadModel(for: pokemon)
+            }
+        }
+        .alert(isPresented: .constant(viewModel.error != nil && !viewModel.isPlacementReady)) {
+            Alert(
+                title: Text("AR Error"),
+                message: Text(viewModel.error ?? "Unknown error occurred"),
+                primaryButton: .default(Text("Retry")) {
+                    viewModel.loadModel(for: pokemon)
+                },
+                secondaryButton: .cancel(Text("Go Back")) {
+                    self.presentationMode.wrappedValue.dismiss()
+                }
+            )
         }
     }
 }
@@ -73,6 +108,7 @@ struct ARViewContainer: UIViewRepresentable {
     let pokemon: Pokemon
     let modelEntity: ModelEntity?
     @Binding var placementMode: Bool
+    let isPlacementReady: Bool
     
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
@@ -81,7 +117,10 @@ struct ARViewContainer: UIViewRepresentable {
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal, .vertical]
         configuration.environmentTexturing = .automatic
-        arView.session.run(configuration)
+        
+        // Apply safer configuration
+        let options: ARSession.RunOptions = [.removeExistingAnchors, .resetTracking]
+        arView.session.run(configuration, options: options)
         
         // Add coaching overlay
         let coachingOverlay = ARCoachingOverlayView()
@@ -109,6 +148,13 @@ struct ARViewContainer: UIViewRepresentable {
         context.coordinator.arView = uiView
         context.coordinator.modelEntity = modelEntity
         context.coordinator.placementMode = placementMode
+        context.coordinator.isPlacementReady = isPlacementReady
+        
+        // If we're entering placement mode and we have a model,
+        // we need to remove any existing anchors
+        if placementMode && modelEntity != nil && isPlacementReady {
+            context.coordinator.resetScene()
+        }
     }
     
     func makeCoordinator() -> Coordinator {
@@ -120,14 +166,26 @@ struct ARViewContainer: UIViewRepresentable {
         var arView: ARView?
         var modelEntity: ModelEntity?
         var placementMode: Bool = true
+        var isPlacementReady: Bool = false
         var anchorEntity: AnchorEntity?
         
         init(_ parent: ARViewContainer) {
             self.parent = parent
         }
         
+        func resetScene() {
+            guard let arView = arView else { return }
+            
+            // Remove all anchors from the scene
+            arView.scene.anchors.removeAll()
+            self.anchorEntity = nil
+        }
+        
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let arView = arView, placementMode, let modelEntity = modelEntity else { return }
+            guard let arView = arView,
+                  placementMode,
+                  isPlacementReady,
+                  let modelEntity = modelEntity else { return }
             
             // Get tap location
             let tapLocation = gesture.location(in: arView)
@@ -154,7 +212,39 @@ struct ARViewContainer: UIViewRepresentable {
                 
                 // Add animation
                 addIdleAnimation(to: modelCopy)
+            } else {
+                // If no surface found, place in front of the camera as fallback
+                placeFallbackModel(modelEntity)
             }
+        }
+        
+        func placeFallbackModel(_ modelEntity: ModelEntity) {
+            guard let arView = arView else { return }
+            
+            // Place the model 1 meter in front of the camera
+            let cameraTransform = arView.cameraTransform
+            var position = cameraTransform.translation
+            let forward = cameraTransform.matrix.columns.2
+            position += SIMD3<Float>(-forward.x, -forward.y, -forward.z) * 1.0
+            
+            // Create anchor at the calculated position
+            self.anchorEntity = AnchorEntity(world: position)
+            
+            // Clone the model entity to avoid modifying the original
+            let modelCopy = modelEntity.clone(recursive: true)
+            self.anchorEntity?.addChild(modelCopy)
+            
+            // Add to scene
+            arView.scene.addAnchor(self.anchorEntity!)
+            
+            // Exit placement mode
+            DispatchQueue.main.async {
+                self.placementMode = false
+                self.parent.placementMode = false
+            }
+            
+            // Add animation
+            addIdleAnimation(to: modelCopy)
         }
         
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
@@ -164,12 +254,18 @@ struct ARViewContainer: UIViewRepresentable {
             case .changed:
                 let scale = Float(gesture.scale)
                 // Adjust scale with limits
-                let currentScale = anchorEntity.children.first?.scale ?? SIMD3<Float>(1, 1, 1)
-                let maxScale: Float = 3.0
-                let minScale: Float = 0.1
-                
-                if (currentScale.x * scale) <= maxScale && (currentScale.x * scale) >= minScale {
-                    anchorEntity.children.first?.scale = currentScale * scale
+                if let modelEntity = anchorEntity.children.first {
+                    let currentScale = modelEntity.scale
+                    let maxScale: Float = 3.0
+                    let minScale: Float = 0.1
+                    
+                    let newScale = SIMD3<Float>(
+                        min(max(currentScale.x * scale, minScale), maxScale),
+                        min(max(currentScale.y * scale, minScale), maxScale),
+                        min(max(currentScale.z * scale, minScale), maxScale)
+                    )
+                    
+                    modelEntity.scale = newScale
                 }
                 
                 // Reset gesture scale
@@ -188,7 +284,7 @@ struct ARViewContainer: UIViewRepresentable {
                 
                 // Get current transform
                 if let modelEntity = anchorEntity.children.first {
-                    // Create rotation transform
+                    // Create rotation transform around Y axis (up)
                     var transform = modelEntity.transform
                     transform.rotation = simd_quatf(angle: rotation, axis: SIMD3<Float>(0, 1, 0)) * transform.rotation
                     
@@ -215,7 +311,12 @@ struct ARViewContainer: UIViewRepresentable {
                 modelEntity.move(to: moveDown, relativeTo: modelEntity, duration: 1.0, timingFunction: .easeInOut)
                 
                 // Setup looping animation
-                Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+                Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+                    guard self != nil else {
+                        timer.invalidate()
+                        return
+                    }
+                    
                     // Toggle between up and down
                     if modelEntity.transform.translation.y < 0 {
                         modelEntity.move(to: moveUp, relativeTo: modelEntity, duration: 1.0, timingFunction: .easeInOut)
