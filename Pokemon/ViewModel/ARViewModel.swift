@@ -7,103 +7,66 @@
 
 import Foundation
 import Combine
-import ARKit
 import RealityKit
+import ARKit
+
 
 class ARViewModel: ObservableObject {
     @Published var modelEntity: ModelEntity?
     @Published var isLoading = false
     @Published var error: String?
     @Published var isPlacementReady = false
-    
-    private let modelService = Pokemon3DModelService()
+
     private var cancellables = Set<AnyCancellable>()
-    
+
     func loadModel(for pokemon: Pokemon) {
         isLoading = true
         error = nil
         isPlacementReady = false
-        
-        // Check if the model exists using the Pokemon ID
-        print("Checking model for: \(pokemon.name) (ID: \(pokemon.id))")
-        
-        // Use a timeout for the availability check
-        let timeoutTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
-            guard let self = self, self.isLoading else { return }
-            
-            // Timeout occurred, proceed with download anyway
-            print("Availability check timed out for: \(pokemon.name), attempting download anyway")
-            self.proceedWithModelDownload(pokemon: pokemon)
-        }
-        
-        modelService.checkModelAvailability(pokemonId: pokemon.id)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] available in
-                guard let self = self else { return }
-                
-                // Cancel the timeout timer
-                timeoutTimer.invalidate()
-                
-                if !available {
-                    // Even if the model is not officially available, we'll try downloading it anyway
-                    // but we'll log the information
-                    print("Model reported as unavailable for: \(pokemon.name) (ID: \(pokemon.id)), attempting anyway")
-                }
-                
-                self.proceedWithModelDownload(pokemon: pokemon)
-            }
-            .store(in: &cancellables)
-    }
-    
-    private func proceedWithModelDownload(pokemon: Pokemon) {
-        print("Attempting to download model for: \(pokemon.name) (ID: \(pokemon.id))")
-        
-        if let modelURL = self.modelService.getModelURL(pokemonId: pokemon.id) {
-            self.downloadAndProcessGLBModel(url: modelURL, pokemonName: pokemon.name)
-        } else {
-            self.handleModelError(message: "Failed to create model URL for \(pokemon.name)")
-        }
-    }
-    
-    private func downloadAndProcessGLBModel(url: URL, pokemonName: String) {
-        print("Starting GLB download from: \(url.absoluteString)")
-        
-        // Set a timeout for the entire download process
-        let downloadTimeout = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
-            guard let self = self, self.isLoading else { return }
-            
-            // Timeout occurred
-            self.handleModelError(message: "Download timed out for \(pokemonName)")
-        }
-        
-        modelService.loadGLBModel(from: url) { [weak self] result in
+
+        print("Loading 3D model for: \(pokemon.name) (ID: \(pokemon.id))")
+
+        let modelName = pokemon.name
+
+        // Make sure this runs on the main thread
+        DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
-            // Cancel the timeout timer
-            downloadTimeout.invalidate()
-            
-            DispatchQueue.main.async {
-                self.isLoading = false
-                
-                switch result {
-                case .success(let modelEntity):
-                    print("Successfully loaded model for: \(pokemonName)")
-                    self.modelEntity = modelEntity
-                    self.isPlacementReady = true
-                    self.error = nil
-                    
-                case .failure(let error):
-                    self.handleModelError(message: "Failed to load model: \(error.localizedDescription)")
-                }
+
+            guard let modelURL = Bundle.main.url(forResource: modelName, withExtension: "usdz") else {
+                self.handleModelError(message: "Model not found: \(modelName).usdz")
+                return
             }
+
+            print("Found model at: \(modelURL.path)")
+
+            Entity.loadAsync(contentsOf: modelURL)
+                .receive(on: DispatchQueue.main)
+                .sink(receiveCompletion: { completion in
+                    if case let .failure(error) = completion {
+                        self.handleModelError(message: "Failed to load model: \(error.localizedDescription)")
+                    }
+                }, receiveValue: { entity in
+                    let containerEntity = ModelEntity()
+                    containerEntity.addChild(entity)
+                    containerEntity.scale = SIMD3<Float>(0.1, 0.1, 0.1)
+                    containerEntity.generateCollisionShapes(recursive: true)
+
+                    self.modelEntity = containerEntity
+                    self.isPlacementReady = true
+                    self.isLoading = false
+                    self.error = nil
+
+                    print("Successfully loaded model: \(modelName).usdz")
+                })
+                .store(in: &self.cancellables)
         }
     }
-    
+
     private func handleModelError(message: String) {
         DispatchQueue.main.async {
             self.isLoading = false
             self.error = message
-            print(message)
+            print("AR Model Error: \(message)")
         }
     }
 }

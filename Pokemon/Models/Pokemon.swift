@@ -15,9 +15,8 @@ struct Pokemon: Identifiable, Codable {
         return "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/\(id).png"
     }
     
-    // For 3D model access - corrected URL format based on repository documentation
-    var modelUrl: URL? {
-        // Use the ID number for the file name, not the Pokémon name
-        return URL(string: "https://raw.githubusercontent.com/Sudhanshu-Ambastha/Pokemon-3D/main/models/glb/regular/\(id).glb")
+    // For local 3D model access
+    var localModelName: String {
+        return "\(id)"  // Assuming models are named by ID, like "1.usdz", "2.usdz", etc.
     }
 }
