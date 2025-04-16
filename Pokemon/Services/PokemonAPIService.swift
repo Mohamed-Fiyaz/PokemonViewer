@@ -1,6 +1,6 @@
 //
 //  PokemonAPIService.swift
-//  PokemonViewer
+//  Pokemon
 //
 //  Created by Mohamed Fiyaz on 13/04/25.
 //
@@ -26,6 +26,11 @@ class PokemonAPIService {
                 }
             }
             .eraseToAnyPublisher()
+    }
+    
+    func fetchAllKantoPokemons() -> AnyPublisher<[Pokemon], Error> {
+        // Fetch all 151 Kanto Pokémon at once
+        return fetchPokemons(offset: 0, limit: 151)
     }
     
     func fetchPokemonDetail(id: Int) -> AnyPublisher<PokemonDetail, Error> {

@@ -1,6 +1,6 @@
 //
 //  ARPokemonView.swift
-//  PokemonViewer
+//  Pokemon
 //
 //  Created by Mohamed Fiyaz on 13/04/25.
 //
@@ -18,10 +18,10 @@ struct ARPokemonView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             ARViewContainer(pokemon: pokemon,
-                           modelEntity: viewModel.modelEntity,
-                           placementMode: $placementMode,
-                           isPlacementReady: viewModel.isPlacementReady)
-                .edgesIgnoringSafeArea(.all)
+                            modelEntity: viewModel.modelEntity,
+                            placementMode: $placementMode,
+                            isPlacementReady: viewModel.isPlacementReady)
+            .edgesIgnoringSafeArea(.all)
             
             if viewModel.isLoading {
                 LoadingOverlay()
@@ -151,7 +151,7 @@ struct ARViewContainer: UIViewRepresentable {
                     self.placementMode = false
                     self.parent.placementMode = false
                 }
-
+                
             } else {
                 // If no surface found, place in front of the camera as fallback
                 placeFallbackModel(modelEntity)

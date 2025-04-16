@@ -1,6 +1,6 @@
 //
 //  PokemonListViewModel.swift
-//  PokemonViewer
+//  Pokemon
 //
 //  Created by Mohamed Fiyaz on 13/04/25.
 //
@@ -14,10 +14,18 @@ class PokemonListViewModel: ObservableObject {
     @Published var error: String?
     @Published var currentPage = 1
     @Published var totalPages = 1
+    @Published var searchText = ""
     
     private let pageSize = 20
+    private let totalPokemon = 151 // Only Kanto Pokémon (1-151)
     private let apiService = PokemonAPIService()
     private var cancellables = Set<AnyCancellable>()
+    private var allPokemons: [Pokemon] = [] // Store all Pokémon for search functionality
+    
+    init() {
+        // Calculate total pages based on 151 Pokémon
+        totalPages = (totalPokemon + pageSize - 1) / pageSize // Ceiling division
+    }
     
     func loadFirstPage() {
         loadPokemons(offset: 0)
@@ -36,8 +44,37 @@ class PokemonListViewModel: ObservableObject {
     }
     
     func goToPage(_ page: Int) {
-        if page >= 1 && page <= totalPages && page != currentPage && !isLoading {
-            loadPokemons(offset: (page - 1) * pageSize)
+        if page >= 1 && page <= totalPages && !isLoading {
+            // Force load the requested page
+            let offset = (page - 1) * pageSize
+            loadPokemons(offset: offset)
+        }
+    }
+    
+    func clearSearch() {
+        searchText = ""
+        // Return to current page view without search filtering
+        let offset = (currentPage - 1) * pageSize
+        let endIndex = min(offset + pageSize, allPokemons.count)
+        if offset < allPokemons.count {
+            pokemons = Array(allPokemons[offset..<endIndex])
+        }
+    }
+    
+    func searchPokemon(query: String) {
+        if query.isEmpty {
+            // If search is empty, show current page
+            let offset = (currentPage - 1) * pageSize
+            let endIndex = min(offset + pageSize, allPokemons.count)
+            if offset < allPokemons.count {
+                pokemons = Array(allPokemons[offset..<endIndex])
+            }
+        } else {
+            // Filter Pokémon by name
+            let filteredPokemon = allPokemons.filter {
+                $0.name.lowercased().contains(query.lowercased())
+            }
+            pokemons = filteredPokemon
         }
     }
     
@@ -45,7 +82,16 @@ class PokemonListViewModel: ObservableObject {
         isLoading = true
         error = nil
         
-        apiService.fetchPokemons(offset: offset, limit: pageSize)
+        // Ensure we only fetch up to 151 Pokémon
+        let adjustedLimit = min(pageSize, totalPokemon - offset)
+        
+        // Don't fetch if offset is beyond our total
+        if offset >= totalPokemon {
+            isLoading = false
+            return
+        }
+        
+        apiService.fetchPokemons(offset: offset, limit: adjustedLimit)
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
                 self?.isLoading = false
@@ -54,9 +100,35 @@ class PokemonListViewModel: ObservableObject {
                 }
             }, receiveValue: { [weak self] pokemons in
                 guard let self = self else { return }
-                self.pokemons = pokemons
+                
+                // Filter only Pokémon with ID <= 151
+                let kantoPokemons = pokemons.filter { $0.id <= self.totalPokemon }
+                self.pokemons = kantoPokemons
                 self.currentPage = (offset / self.pageSize) + 1
-                self.totalPages = 45 // Approx. 898 Pokémon / 20 per page
+                
+                // Store all Pokémon for search if we don't have them yet
+                if self.allPokemons.isEmpty || self.allPokemons.count < self.totalPokemon {
+                    // Load all Pokémon for search functionality (only do this once)
+                    self.loadAllPokemon()
+                } else if !self.searchText.isEmpty {
+                    // If we have a search text, apply the filter
+                    self.searchPokemon(query: self.searchText)
+                }
+            })
+            .store(in: &cancellables)
+    }
+    
+    private func loadAllPokemon() {
+        apiService.fetchAllKantoPokemons()
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] pokemons in
+                guard let self = self else { return }
+                self.allPokemons = pokemons
+                
+                // If there's a search query, apply it
+                if !self.searchText.isEmpty {
+                    self.searchPokemon(query: self.searchText)
+                }
             })
             .store(in: &cancellables)
     }

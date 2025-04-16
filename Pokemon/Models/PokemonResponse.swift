@@ -1,6 +1,6 @@
 //
 //  PokemonResponse.swift
-//  PokemonViewer
+//  Pokemon
 //
 //  Created by Mohamed Fiyaz on 13/04/25.
 //
