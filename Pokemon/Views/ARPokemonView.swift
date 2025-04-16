@@ -13,7 +13,6 @@ struct ARPokemonView: View {
     let pokemon: Pokemon
     @StateObject private var viewModel = ARViewModel()
     @State private var placementMode = true
-    @State private var showDebugInfo = false
     @Environment(\.presentationMode) var presentationMode
     
     var body: some View {
@@ -24,38 +23,6 @@ struct ARPokemonView: View {
                            isPlacementReady: viewModel.isPlacementReady)
                 .edgesIgnoringSafeArea(.all)
             
-            // Debug overlay for development
-            if showDebugInfo {
-                VStack {
-                    Text("Debug Info")
-                        .font(.headline)
-                    Text("Pokemon: \(pokemon.name) (ID: \(pokemon.id))")
-                    Text("Local Model: \(pokemon.localModelName)")
-                        .font(.caption)
-                    
-                    if let error = viewModel.error {
-                        Text("Error: \(error)")
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .lineLimit(3)
-                    }
-                    
-                    Button("Hide Debug") {
-                        showDebugInfo = false
-                    }
-                    .padding(8)
-                    .background(Color.red)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                }
-                .padding()
-                .background(Color.black.opacity(0.7))
-                .foregroundColor(.white)
-                .cornerRadius(10)
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .top)
-            }
-            
             if viewModel.isLoading {
                 LoadingOverlay()
             } else if let error = viewModel.error {
@@ -63,23 +30,13 @@ struct ARPokemonView: View {
                     viewModel.loadModel(for: pokemon)
                 }
             } else if placementMode && viewModel.isPlacementReady {
-                PlacementButton {
-                    placementMode = false
-                }
+                PlacementInstructionView()
             } else if !placementMode {
-                ARControlsView(placementMode: $placementMode, showDebug: $showDebugInfo)
+                ARControlsView(placementMode: $placementMode)
             }
         }
         .navigationTitle("\(pokemon.name) in AR")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarItems(trailing:
-            Button(action: {
-                showDebugInfo.toggle()
-            }) {
-                Image(systemName: "ladybug")
-                    .foregroundColor(.blue)
-            }
-        )
         .onAppear {
             // Delay loading to ensure AR view is properly initialized
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -279,9 +236,6 @@ struct ARViewContainer: UIViewRepresentable {
                 break
             }
         }
-        
-
-
     }
 }
 
@@ -332,33 +286,18 @@ struct ErrorOverlay: View {
     }
 }
 
-struct PlacementButton: View {
-    let action: () -> Void
-    
+struct PlacementInstructionView: View {
     var body: some View {
-        VStack {
-            Text("Tap on a surface to place the Pokémon")
-                .padding()
-                .background(Color.white.opacity(0.8))
-                .cornerRadius(10)
-                .padding(.bottom, 8)
-            
-            Button(action: action) {
-                Text("Skip Placement")
-                    .fontWeight(.bold)
-                    .padding()
-                    .background(Color.red)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
-        }
-        .padding()
+        Text("Tap on a surface to place the Pokémon")
+            .padding()
+            .background(Color.white.opacity(0.8))
+            .cornerRadius(10)
+            .padding(.bottom, 20)
     }
 }
 
 struct ARControlsView: View {
     @Binding var placementMode: Bool
-    @Binding var showDebug: Bool
     
     var body: some View {
         HStack(spacing: 20) {
@@ -383,22 +322,6 @@ struct ARControlsView: View {
                 .padding(8)
                 .background(Color.white.opacity(0.8))
                 .cornerRadius(8)
-            
-            Button(action: {
-                showDebug.toggle()
-            }) {
-                VStack {
-                    Image(systemName: "ladybug")
-                        .font(.system(size: 22))
-                    Text("Debug")
-                        .font(.caption)
-                }
-                .frame(width: 60, height: 60)
-                .background(Color.white)
-                .foregroundColor(.red)
-                .cornerRadius(30)
-                .shadow(radius: 3)
-            }
         }
         .padding(.bottom, 20)
     }
